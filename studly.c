@@ -1,6 +1,8 @@
 // Aaron Okano, Jason Wong, Meenal Tambe, Gowtham Vijayaragavan
 #include <stdio.h>
 #include <sys/time.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <string.h>
 #include <pthread.h>
 #include <stdlib.h>
@@ -8,15 +10,16 @@
 
 // Initialize some global variables
 pthread_mutex_t mutex1 = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t mutex2 = PTHREAD_MUTEX_INITIALIZER;
 // Pointer to the url file
 FILE *f;
 // Counter for number of accesses
 int *accesses;
-long int *recent;
+struct timeval *recent;
 int number = 0;
 int wwidth;
 
-void load_time( long int x )
+void load_time( struct timeval x )
 {
   int i;
   if( number == wwidth )
@@ -38,9 +41,10 @@ void *probe( void *num )
   unsigned int urlsize = 256;
   int n = (int) num;
   accesses[n] = 0;
-  struct timeval timer1, timer2;
-  long int time;
+  struct timeval time1, time2, timer;
   char *tmp;
+  pid_t pid;
+  int stat;
   while(1)
   {
     pthread_mutex_lock( &mutex1 );
@@ -48,30 +52,55 @@ void *probe( void *num )
       rewind(f);
     getline( &url, &urlsize, f );
     tmp = strchr(url, '\n');
-    strcpy(tmp, "");
+    if( tmp != 0 )
+      strcpy(tmp, "");
     pthread_mutex_unlock( &mutex1 );
-    gettimeofday( &timer1, NULL );
-    execlp("wget","wget","--spider",url,NULL);
-    gettimeofday( &timer2, NULL );
-    time = timer2.tv_usec - timer1.tv_usec;
-    load_time(time);
+    gettimeofday( &time1, 0 );
+    pid = fork();
+    if( pid == 0 )
+    {
+      execlp("wget","wget","--spider","-q",url,NULL);
+      _exit(0);
+    }
+    else
+      waitpid(pid, &stat, 0);
+    gettimeofday( &time2, 0 );
+    if( time2.tv_usec < time1.tv_usec )
+    {
+      int nsec = (time1.tv_usec - time2.tv_usec) / 1000000 + 1;
+      time1.tv_usec -= 1000000 * nsec;
+      time1.tv_sec += nsec;
+    }
+    if( time2.tv_usec - time1.tv_usec > 1000000 )
+    {
+      int nsec = (time2.tv_usec - time1.tv_usec) / 1000000 + 1;
+      time1.tv_usec += 1000000 * nsec;
+      time1.tv_sec -= nsec;
+    }
+    timer.tv_sec = time2.tv_sec - time1.tv_sec;
+    timer.tv_usec = time2.tv_usec - time1.tv_usec;
+    pthread_mutex_lock( &mutex2 );
+    load_time(timer);
     accesses[n]++;
+    pthread_mutex_unlock( &mutex2 );
   }
 }
 
 void *reporter( void *num )
 {
-  double length = 10.0/((int)num) * 10000;
+  double length = 10.0/((int)num) * 1000000;
   int i;
   while(1)
   {
     usleep(length);
-    printf("Recent times:\n");
+    pthread_mutex_lock( &mutex2 );
+    printf("\n\nRecent times:\n");
     for( i = 0; i < number; i++ )
-      printf("%d:  %ld\n", i, recent[i]);
-    printf("\n\nThread accesses:\n");
+      printf("%d:  %ld.%ld\n", i, recent[i].tv_sec, recent[i].tv_usec);
+    printf("\nThread accesses:\n");
     for( i = 0; i < (int)num; i++ )
       printf("Thread %d: %d\n", i, accesses[i]);
+    pthread_mutex_unlock( &mutex2 );
   }
 }
 
@@ -94,7 +123,7 @@ int main( int argc, char *argv[] )
   // Make numthreads equal to the number of probe threads only
   numthreads = numthreads - 1;
   accesses = (int*) malloc(sizeof(int)*numthreads);
-  recent = (long int*) malloc(sizeof(int)*numthreads);
+  recent = (struct timeval*) malloc(sizeof(struct timeval)*numthreads);
 
   // Check if file exists
   if( f == NULL )
