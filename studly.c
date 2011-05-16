@@ -7,6 +7,7 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <math.h>
 
 // Initialize some global variables
 // These are the mutexes to lock a couple sections of code
@@ -117,6 +118,33 @@ void *probe( void *num )
   return 0;
 }
 
+double findMean()
+{
+  double mean = 0;
+  int i;
+  for( i = 0; i < number; i++ )
+  {
+    mean += recent[i].tv_sec;
+    mean += recent[i].tv_usec / 1000000.0;
+  }
+  return mean / number;
+}
+
+double findStdDev()
+{
+  double stdDev = 0;
+  double mean = findMean();
+  double num;
+  int i;
+  for( i = 0; i < number; i++ )
+  {
+    num = recent[i].tv_sec;
+    num += recent[i].tv_usec / 1000000.0;
+    stdDev += ( num - mean) * ( num - mean) / number;
+  }
+  return sqrt(stdDev);
+}
+
 // Function that the reporting thread operates from
 void *reporter( void *num )
 {
@@ -128,12 +156,13 @@ void *reporter( void *num )
   {
     // Sleep for 10 / numthreads seconds
     usleep(length);
-    printf("\n\nRecent times:\n");
-    for( i = 0; i < number; i++ )
-      printf("%d:  %ld.%ld\n", i, recent[i].tv_sec, recent[i].tv_usec);
+    pthread_mutex_lock( &mutex2 );
+    printf("\n\nMean: %lf\n", findMean());
+    printf("Std. Deviation: %lf\n", findStdDev());
     printf("\nThread accesses:\n");
     for( i = 0; i < (int)num; i++ )
-      printf("Thread %d: %d\n", i, accesses[i]);
+      printf("Thread %d: %d\n", i+1, accesses[i]);
+    pthread_mutex_unlock( &mutex2 );
   }
   return 0;
 }
@@ -182,7 +211,7 @@ int main( int argc, char *argv[] )
 
   status = 0;
 
-  for( i = 0; i < numthreads+1; i++ )
+  for( i = 0; i <= numthreads; i++ )
     pthread_join( id[i], NULL );
 
   free(id);
